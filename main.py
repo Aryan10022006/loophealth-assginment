@@ -1,6 +1,6 @@
 import os
 import io
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Request
 from fastapi.responses import StreamingResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from deepgram import DeepgramClient
 from agent import get_agent
 import logging
+from typing import Optional
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -58,19 +59,34 @@ async def read_root():
 
 
 @app.post("/chat")
-async def chat(audio: UploadFile = File(...)):
+async def chat(
+    request: Request,
+    audio: Optional[UploadFile] = File(None),
+    text_query: Optional[str] = Form(None)
+):
     """
-    Main chat endpoint that handles voice-to-voice conversation.
+    Main chat endpoint that handles voice-to-voice conversation or text queries.
+    
+    Supports two input modes:
+    1. FormData with 'audio' file (voice queries)
+    2. JSON with 'text_query' field (followup button clicks)
     
     Flow:
-    1. Receive audio file from frontend
-    2. Convert audio to text using Deepgram STT
+    1. Receive audio file OR text query from frontend
+    2. Convert audio to text using Deepgram STT (if audio provided)
     3. Process query with Loop AI agent
     4. Convert response text to audio using Deepgram TTS
-    5. Return audio to frontend
+    5. Return audio to frontend with custom headers
     """
     try:
-        logger.info("Received audio file for processing")
+        # Check if it's a JSON request (followup queries)
+        content_type = request.headers.get('content-type', '')
+        if 'application/json' in content_type:
+            body = await request.json()
+            text_query = body.get('text_query')
+            logger.info(f"Received JSON text query: {text_query}")
+        else:
+            logger.info("Received FormData request")
         
         # Check if Deepgram is initialized
         if not deepgram:
@@ -79,50 +95,61 @@ async def chat(audio: UploadFile = File(...)):
                 detail="Deepgram API key not configured. Please set DEEPGRAM_API_KEY in .env file"
             )
         
-        # Step 1: Read the uploaded audio file
-        audio_data = await audio.read()
-        logger.info(f"Audio file size: {len(audio_data)} bytes")
+        # Step 1: Get user input (either from audio or text)
+        transcript = None
         
-        # Step 2: Speech-to-Text using Deepgram (Prerecorded)
-        logger.info("Converting speech to text...")
-        
-        try:
-            # Determine mime type from upload if available
-            mime_type = getattr(audio, 'content_type', None) or 'audio/webm'
-
-            # Transcribe audio (pass raw bytes as 'request' and options as keywords)
-            response = deepgram.listen.v1.media.transcribe_file(
-                request=audio_data,
-                model="nova-2",
-                smart_format=True,
-            )
-
-            # Extract transcript (SDK response objects have .results)
-            transcript = None
+        if text_query:
+            # Handle text query from followup buttons
+            transcript = text_query
+            logger.info(f"Processing text query: {transcript}")
+        elif audio:
+            # Handle audio query
+            audio_data = await audio.read()
+            logger.info(f"Audio file size: {len(audio_data)} bytes")
+            
+            # Step 2: Speech-to-Text using Deepgram (Prerecorded)
+            logger.info("Converting speech to text...")
+            
             try:
-                transcript = response.results.channels[0].alternatives[0].transcript
-            except Exception:
-                # Fallback to dict-style access if needed
-                try:
-                    transcript = response["results"]["channels"][0]["alternatives"][0]["transcript"]
-                except Exception:
-                    transcript = None
+                # Determine mime type from upload if available
+                mime_type = getattr(audio, 'content_type', None) or 'audio/webm'
 
-            logger.info(f"User said: {transcript}")
-
-            if not transcript or transcript.strip() == "":
-                raise HTTPException(
-                    status_code=400,
-                    detail="Could not understand audio. Please speak clearly."
+                # Transcribe audio (pass raw bytes as 'request' and options as keywords)
+                response = deepgram.listen.v1.media.transcribe_file(
+                    request=audio_data,
+                    model="nova-2",
+                    smart_format=True,
                 )
 
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.exception("STT Error")
+                # Extract transcript (SDK response objects have .results)
+                try:
+                    transcript = response.results.channels[0].alternatives[0].transcript
+                except Exception:
+                    # Fallback to dict-style access if needed
+                    try:
+                        transcript = response["results"]["channels"][0]["alternatives"][0]["transcript"]
+                    except Exception:
+                        transcript = None
+
+                logger.info(f"User said: {transcript}")
+
+                if not transcript or transcript.strip() == "":
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Could not understand audio. Please speak clearly."
+                    )
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.exception("STT Error")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Speech recognition failed: {str(e)}"
+                )
+        else:
             raise HTTPException(
-                status_code=500,
-                detail=f"Speech recognition failed: {str(e)}"
+                status_code=400,
+                detail="Either audio file or text_query must be provided"
             )
         
         # Step 3: Process with AI agent
@@ -174,13 +201,17 @@ async def chat(audio: UploadFile = File(...)):
             )
         
         # Step 5: Return audio response with text in headers
+        # Clean strings for HTTP headers (remove newlines and control characters)
+        clean_transcript = transcript.replace('\n', ' ').replace('\r', ' ')
+        clean_ai_response = ai_response.replace('\n', ' ').replace('\r', ' ')
+        
         return StreamingResponse(
             io.BytesIO(audio_response),
             media_type="audio/wav",
             headers={
                 "Content-Disposition": "attachment; filename=response.wav",
-                "X-Transcript": transcript,
-                "X-AI-Response": ai_response
+                "X-Transcript": clean_transcript,
+                "X-AI-Response": clean_ai_response
             }
         )
     

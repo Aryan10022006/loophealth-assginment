@@ -213,6 +213,131 @@
         .instructions strong {
             color: #333;
         }
+
+        .conversation-history {
+            margin-top: 30px;
+            padding: 20px;
+            background: #f5f5f5;
+            border-radius: 15px;
+            text-align: left;
+            max-height: 300px;
+            overflow-y: auto;
+            display: none;
+        }
+
+        .conversation-history.show {
+            display: block;
+        }
+
+        .conversation-history h3 {
+            font-size: 16px;
+            color: #667eea;
+            margin-bottom: 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .history-item {
+            margin-bottom: 15px;
+            padding: 12px;
+            background: white;
+            border-radius: 10px;
+            border-left: 3px solid #667eea;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        .history-user {
+            font-size: 14px;
+            color: #333;
+            font-weight: 500;
+            margin-bottom: 5px;
+        }
+
+        .history-ai {
+            font-size: 13px;
+            color: #666;
+            line-height: 1.5;
+        }
+
+        .suggested-followups {
+            margin-top: 20px;
+            padding: 20px;
+            background: linear-gradient(135deg, #e8f5e9 0%, #f1f8e9 100%);
+            border-radius: 15px;
+            display: none;
+        }
+
+        .suggested-followups.show {
+            display: block;
+        }
+
+        .suggested-followups h3 {
+            font-size: 16px;
+            color: #4caf50;
+            margin-bottom: 15px;
+        }
+
+        .followup-button {
+            display: block;
+            width: 100%;
+            padding: 12px 15px;
+            margin-bottom: 10px;
+            background: white;
+            border: 2px solid #4caf50;
+            border-radius: 10px;
+            color: #333;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-align: left;
+        }
+
+        .followup-button:hover {
+            background: #4caf50;
+            color: white;
+            transform: translateX(5px);
+        }
+
+        .action-buttons {
+            margin-top: 20px;
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+        }
+
+        .action-button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .new-chat-button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .new-chat-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .clear-button {
+            background: #f5f5f5;
+            color: #666;
+            border: 2px solid #ddd;
+        }
+
+        .clear-button:hover {
+            background: #e0e0e0;
+        }
     </style>
 </head>
 <body>
@@ -240,6 +365,30 @@
 
         <div id="errorMessage" class="error-message"></div>
 
+        <div class="action-buttons">
+            <button id="newChatButton" class="action-button new-chat-button" style="display: none;">
+                🔄 New Chat
+            </button>
+            <button id="clearButton" class="action-button clear-button" style="display: none;">
+                🗑️ Clear History
+            </button>
+        </div>
+
+        <div id="suggestedFollowups" class="suggested-followups">
+            <h3>💡 Suggested Follow-ups:</h3>
+            <div id="followupButtons"></div>
+        </div>
+
+        <div id="conversationHistory" class="conversation-history">
+            <h3>
+                📝 Conversation History
+                <span style="font-size: 12px; font-weight: normal; color: #999;">
+                    (<span id="historyCount">0</span> exchanges)
+                </span>
+            </h3>
+            <div id="historyItems"></div>
+        </div>
+
         <div class="instructions">
             <strong>Try asking:</strong><br>
             • "Tell me 3 hospitals around Bangalore"<br>
@@ -256,12 +405,20 @@
         const aiResponse = document.getElementById('aiResponse');
         const aiResponseText = document.getElementById('aiResponseText');
         const errorMessage = document.getElementById('errorMessage');
+        const newChatButton = document.getElementById('newChatButton');
+        const clearButton = document.getElementById('clearButton');
+        const suggestedFollowups = document.getElementById('suggestedFollowups');
+        const followupButtons = document.getElementById('followupButtons');
+        const conversationHistory = document.getElementById('conversationHistory');
+        const historyItems = document.getElementById('historyItems');
+        const historyCount = document.getElementById('historyCount');
 
         let mediaRecorder;
         let audioChunks = [];
         let isRecording = false;
         let isProcessing = false;
         let audioElement = null;
+        let conversationLog = [];
 
         // Check for browser support
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -380,6 +537,18 @@
                     aiResponse.classList.add('show');
                 }
 
+                // Add to conversation log
+                if (userTranscript && aiTextResponse) {
+                    conversationLog.push({
+                        user: userTranscript,
+                        ai: aiTextResponse,
+                        timestamp: new Date().toLocaleTimeString()
+                    });
+                    updateConversationHistory();
+                    generateFollowups(userTranscript, aiTextResponse);
+                    showActionButtons();
+                }
+
                 // Get audio response
                 const audioResponseBlob = await response.blob();
 
@@ -440,6 +609,154 @@
         function hideError() {
             errorMessage.classList.remove('show');
         }
+
+        function updateConversationHistory() {
+            if (conversationLog.length === 0) {
+                conversationHistory.classList.remove('show');
+                return;
+            }
+
+            historyCount.textContent = conversationLog.length;
+            historyItems.innerHTML = '';
+
+            // Show last 5 conversations
+            const recentConversations = conversationLog.slice(-5).reverse();
+            
+            recentConversations.forEach((conv, index) => {
+                const historyItem = document.createElement('div');
+                historyItem.className = 'history-item';
+                historyItem.innerHTML = `
+                    <div class="history-user">👤 You: ${conv.user}</div>
+                    <div class="history-ai">🤖 Loop AI: ${conv.ai}</div>
+                `;
+                historyItems.appendChild(historyItem);
+            });
+
+            conversationHistory.classList.add('show');
+        }
+
+        function generateFollowups(userQuery, aiResponse) {
+            const followupSuggestions = [];
+
+            // Context-aware followup generation
+            if (userQuery.toLowerCase().includes('bangalore') || aiResponse.toLowerCase().includes('bangalore')) {
+                followupSuggestions.push("Show me more hospitals in Bangalore");
+                followupSuggestions.push("Are there any Apollo hospitals in Bangalore?");
+            } else if (userQuery.toLowerCase().includes('delhi')) {
+                followupSuggestions.push("Tell me about hospitals in Delhi");
+                followupSuggestions.push("Show me Fortis hospitals in Delhi");
+            }
+
+            if (userQuery.toLowerCase().includes('manipal')) {
+                followupSuggestions.push("What other Manipal hospitals are available?");
+                followupSuggestions.push("Show me Manipal hospitals in other cities");
+            }
+
+            if (aiResponse.toLowerCase().includes('found')) {
+                followupSuggestions.push("Can you give me more details?");
+                followupSuggestions.push("Are there any alternatives?");
+            }
+
+            // Generic followups
+            if (followupSuggestions.length < 3) {
+                followupSuggestions.push("Show me hospitals in Mumbai");
+                followupSuggestions.push("Tell me about hospitals in Chennai");
+            }
+
+            // Display followups (max 3)
+            followupButtons.innerHTML = '';
+            followupSuggestions.slice(0, 3).forEach(suggestion => {
+                const button = document.createElement('button');
+                button.className = 'followup-button';
+                button.textContent = `💬 ${suggestion}`;
+                button.onclick = () => handleFollowupClick(suggestion);
+                followupButtons.appendChild(button);
+            });
+
+            suggestedFollowups.classList.add('show');
+        }
+
+        async function handleFollowupClick(query) {
+            // Simulate speaking the query
+            statusText.textContent = `Processing: "${query}"`;
+            
+            // Create a text-to-speech blob and send it
+            const utterance = new SpeechSynthesisUtterance(query);
+            
+            // For now, we'll use the Web Speech API to convert text to audio
+            // In production, you might want to record this properly
+            try {
+                isProcessing = true;
+                micButton.disabled = true;
+                micButton.classList.add('processing');
+                
+                // Create a simple audio recording simulation
+                // In a real scenario, you'd convert the text to audio properly
+                const response = await fetch('http://localhost:8000/chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ text_query: query })
+                });
+
+                // For now, just display the query as if it was spoken
+                transcriptText.textContent = query;
+                transcript.classList.add('show');
+                
+                if (!response.ok) throw new Error('Server error');
+                
+                const aiTextResponse = response.headers.get('X-AI-Response');
+                
+                if (aiTextResponse) {
+                    aiResponseText.textContent = aiTextResponse;
+                    aiResponse.classList.add('show');
+                    
+                    conversationLog.push({
+                        user: query,
+                        ai: aiTextResponse,
+                        timestamp: new Date().toLocaleTimeString()
+                    });
+                    updateConversationHistory();
+                    generateFollowups(query, aiTextResponse);
+                }
+                
+                const audioResponseBlob = await response.blob();
+                await playAudioResponse(audioResponseBlob);
+                
+            } catch (error) {
+                console.error('Followup error:', error);
+                showError('Could not process followup query');
+                resetUI();
+            }
+        }
+
+        function showActionButtons() {
+            newChatButton.style.display = 'flex';
+            clearButton.style.display = 'flex';
+        }
+
+        newChatButton.addEventListener('click', () => {
+            // Start fresh conversation
+            transcript.classList.remove('show');
+            aiResponse.classList.remove('show');
+            suggestedFollowups.classList.remove('show');
+            hideError();
+            statusText.textContent = 'New chat started. Click the microphone to begin.';
+        });
+
+        clearButton.addEventListener('click', () => {
+            if (confirm('Clear all conversation history?')) {
+                conversationLog = [];
+                updateConversationHistory();
+                transcript.classList.remove('show');
+                aiResponse.classList.remove('show');
+                suggestedFollowups.classList.remove('show');
+                newChatButton.style.display = 'none';
+                clearButton.style.display = 'none';
+                statusText.textContent = 'History cleared. Click the microphone to start.';
+            }
+        });
 
         // Cleanup on page unload
         window.addEventListener('beforeunload', () => {
